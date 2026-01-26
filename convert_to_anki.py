@@ -39,8 +39,40 @@ def setup_directories():
     os.makedirs(IMAGES_DIR, exist_ok=True)
 
 
+def fix_url(url):
+    """Fix malformed URLs."""
+    # Fix double slashes after protocol (https:////example.com -> https://example.com)
+    url = re.sub(r'^(https?:)//+', r'\1//', url)
+    return url
+
+
+def decode_zhihu_equation(url):
+    """Extract LaTeX from Zhihu equation URL and convert to Anki MathJax."""
+    match = re.search(r'zhihu\.com/equation\?tex=([^&\s]+)', url)
+    if match:
+        import urllib.parse
+        latex = urllib.parse.unquote(match.group(1))
+        # Determine if it's display or inline math based on content
+        if any(cmd in latex for cmd in ['\\begin{', '\\\\', '\\frac', '\\sum', '\\int']):
+            return f'<anki-mathjax block="true">{latex}</anki-mathjax>'
+        return f'<anki-mathjax>{latex}</anki-mathjax>'
+    return None
+
+
+def is_local_path(url):
+    """Check if URL is actually a local file path."""
+    # Windows paths like C:\Users\... or relative paths
+    return bool(re.match(r'^[A-Za-z]:\\', url) or
+                url.startswith('./') or
+                url.startswith('../') or
+                (not url.startswith('http') and '\\' in url))
+
+
 def download_image(url, question_id):
     """Download image and return local filename."""
+    # Fix malformed URLs
+    url = fix_url(url)
+
     try:
         # Generate filename from URL hash
         url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
@@ -55,7 +87,7 @@ def download_image(url, question_id):
             return filename
 
         # Download
-        print(f"  Downloading: {url[:60]}...")
+        print(f"  Downloading: {url[:70]}...")
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=10, context=ssl_context) as response:
             with open(filepath, "wb") as f:
@@ -68,26 +100,73 @@ def download_image(url, question_id):
 
 def convert_images_to_anki(text, question_id):
     """Convert markdown/HTML images to Anki format and download them."""
+    # Pattern for Zhihu-style nested bracket images: ![[公式]](url)
+    zhihu_pattern = r"!\[\[([^\]]*)\]\]\(([^)]+)\)"
     # Pattern for markdown images: ![alt](url)
     md_pattern = r"!\[([^\]]*)\]\(([^)]+)\)"
     # Pattern for HTML images: <img src="url">
     html_pattern = r'<img[^>]*src=["\']([^"\']+)["\'][^>]*>'
 
-    def replace_md_image(match):
-        alt = match.group(1)
+    def replace_zhihu_image(match):
+        """Handle Zhihu-style ![[公式]](url) format."""
         url = match.group(2)
+        if 'zhihu.com/equation' in url:
+            latex = decode_zhihu_equation(url)
+            if latex:
+                return latex
+        # Fall through to regular image handling
         if url.startswith("http"):
             filename = download_image(url, question_id)
             if filename:
                 return f'<img src="{filename}">'
+            return "[Image unavailable]"
+        return match.group(0)
+
+    # Process Zhihu-style images first (more specific pattern)
+    text = re.sub(zhihu_pattern, replace_zhihu_image, text)
+
+    def replace_md_image(match):
+        alt = match.group(1)
+        url = match.group(2)
+
+        # Skip local file paths
+        if is_local_path(url):
+            print(f"  Skipping local path: {url[:50]}...")
+            return ""  # Remove broken local image reference
+
+        # Convert Zhihu equation URLs to LaTeX
+        if 'zhihu.com/equation' in url:
+            latex = decode_zhihu_equation(url)
+            if latex:
+                return latex
+
+        if url.startswith("http"):
+            filename = download_image(url, question_id)
+            if filename:
+                return f'<img src="{filename}">'
+            # Failed to download - remove the broken reference
+            return f"[Image unavailable: {alt or 'image'}]"
         return match.group(0)
 
     def replace_html_image(match):
         url = match.group(1)
+
+        # Skip local file paths
+        if is_local_path(url):
+            print(f"  Skipping local path: {url[:50]}...")
+            return ""
+
+        # Convert Zhihu equation URLs to LaTeX
+        if 'zhihu.com/equation' in url:
+            latex = decode_zhihu_equation(url)
+            if latex:
+                return latex
+
         if url.startswith("http"):
             filename = download_image(url, question_id)
             if filename:
                 return f'<img src="{filename}">'
+            return "[Image unavailable]"
         return match.group(0)
 
     text = re.sub(md_pattern, replace_md_image, text)
@@ -96,9 +175,26 @@ def convert_images_to_anki(text, question_id):
 
 
 def convert_latex_to_anki(text):
-    """Convert LaTeX math to Anki-compatible MathJax format."""
-    # Keep $...$ and $$...$$ as is - Anki supports MathJax
-    # Just ensure proper escaping for tab-separated format
+    """Convert LaTeX math to Anki-compatible MathJax format.
+
+    Anki does not automatically detect $...$ or $$...$$ delimiters.
+    Math must be wrapped in <anki-mathjax> tags for MathJax to render.
+    """
+    # Convert display math $$...$$ to <anki-mathjax block="true">
+    # Use DOTALL to handle multi-line formulas
+    text = re.sub(
+        r'\$\$(.+?)\$\$',
+        r'<anki-mathjax block="true">\1</anki-mathjax>',
+        text,
+        flags=re.DOTALL
+    )
+    # Convert inline math $...$ to <anki-mathjax>
+    # Negative lookbehind/lookahead to avoid matching already-converted $$ or escaped \$
+    text = re.sub(
+        r'(?<!\$)(?<!\\)\$(?!\$)(.+?)(?<!\\)\$(?!\$)',
+        r'<anki-mathjax>\1</anki-mathjax>',
+        text
+    )
     return text
 
 
@@ -494,18 +590,7 @@ Copy all files from `anki_images/` to your Anki media folder:
 - **Mac**: `~/Library/Application Support/Anki2/<profile>/collection.media`
 - **Linux**: `~/.local/share/Anki2/<profile>/collection.media`
 
-### Step 2: Enable MathJax (for LaTeX formulas)
-
-Anki 2.1+ supports MathJax by default. To enable:
-1. Go to Tools → Manage Note Types
-2. Select your note type → Cards
-3. Add to front/back template if not present:
-```html
-<script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
-<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
-```
-
-### Step 3: Import Basic Cards
+### Step 2: Import Basic Cards
 
 1. Open Anki
 2. File → Import
@@ -519,7 +604,7 @@ Anki 2.1+ supports MathJax by default. To enable:
    - Field 3: Tags
 5. Click Import
 
-### Step 4: Import Cloze Cards
+### Step 3: Import Cloze Cards
 
 1. File → Import
 2. Select `anki_cloze_cards.txt`
@@ -562,8 +647,9 @@ Run `python convert_to_anki.py` to regenerate all cards.
 ## Notes
 
 - Cards include English translations for key ML terms in parentheses
-- LaTeX math formulas are preserved for MathJax rendering
+- LaTeX math is converted to `<anki-mathjax>` tags for native Anki rendering (no extra setup needed)
 - Images are downloaded locally for offline use
+- Zhihu equation images are automatically converted to LaTeX
 - Cloze cards are generated for definitions, lists, and key formulas
 """
 

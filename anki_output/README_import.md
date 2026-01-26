@@ -15,18 +15,7 @@ Copy all files from `anki_images/` to your Anki media folder:
 - **Mac**: `~/Library/Application Support/Anki2/<profile>/collection.media`
 - **Linux**: `~/.local/share/Anki2/<profile>/collection.media`
 
-### Step 2: Enable MathJax (for LaTeX formulas)
-
-Anki 2.1+ supports MathJax by default. To enable:
-1. Go to Tools → Manage Note Types
-2. Select your note type → Cards
-3. Add to front/back template if not present:
-```html
-<script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
-<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
-```
-
-### Step 3: Import Basic Cards
+### Step 2: Import Basic Cards
 
 1. Open Anki
 2. File → Import
@@ -40,7 +29,7 @@ Anki 2.1+ supports MathJax by default. To enable:
    - Field 3: Tags
 5. Click Import
 
-### Step 4: Import Cloze Cards
+### Step 3: Import Cloze Cards
 
 1. File → Import
 2. Select `anki_cloze_cards.txt`
@@ -83,6 +72,7 @@ Run `python convert_to_anki.py` to regenerate all cards.
 ## Notes
 
 - Cards include English translations for key ML terms in parentheses
-- LaTeX math formulas are preserved for MathJax rendering
+- LaTeX math is converted to `<anki-mathjax>` tags for native Anki rendering (no extra setup needed)
 - Images are downloaded locally for offline use
+- Zhihu equation images are automatically converted to LaTeX
 - Cloze cards are generated for definitions, lists, and key formulas
